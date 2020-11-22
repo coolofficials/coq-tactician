@@ -78,21 +78,9 @@ let benchmarktime = ref None
 let benchmarkinferences = ref None
 let benchmarking = ref false
 
-let featureprinting = ref false
-
 let base_filename =
   let dirpath = Global.current_dirpath () in
   Option.map (fun f -> Filename.remove_extension f) (try_locate_absolute_library dirpath)
-
-let feat_file =
-  let file = ref None in
-  (fun () ->
-    match !file with
-      | None -> let filename = Option.default "" base_filename ^ ".feat" in
-        let k = open_permanently filename in
-        file := Some k;
-        k
-      | Some f -> f)
 
 let eval_file =
   let file = ref None in
@@ -103,10 +91,6 @@ let eval_file =
        file := Some k;
        k
      | Some f -> f)
-
-let print_to_feat str =
-  output_string (feat_file ()) str;
-  flush (feat_file ())
 
 let print_to_eval str =
   output_string (eval_file ()) str;
@@ -134,15 +118,9 @@ let benchinferenceoptions = Goptions.{optdepr = false;
                                      optread = (fun () -> !benchmarkinferences);
                                      optwrite = (fun b -> benchmarkinferences := b;
                                                   bench_prepare())}
-let featureoptions = Goptions.{optdepr = false;
-                               optname = "Tactician feature outputting";
-                               optkey = ["Tactician"; "Output"; "Features"];
-                               optread = (fun () -> !featureprinting);
-                               optwrite = (fun b -> featureprinting := b)}
 
 let _ = Goptions.declare_int_option benchtimeoptions
 let _ = Goptions.declare_int_option benchinferenceoptions
-let _ = Goptions.declare_bool_option featureoptions
 
 let _ = Random.self_init ()
 
@@ -420,34 +398,7 @@ let add_to_db2 id ((outcomes, tac) : (Proofview.Goal.t * Proofview.Goal.t list) 
   let outcomes = List.map mk_outcome outcomes in
   add_to_db (outcomes, tac);
   let semidb, exn = Hashtbl.find int64_to_knn id in
-  Hashtbl.replace int64_to_knn id ((outcomes, tac)::semidb, exn);
-  if !featureprinting then (
-    (* let h s = string_of_int (Hashtbl.hash s) in
-     * (\* let l2s fs = "[" ^ (String.concat ", " (List.map (fun x -> string_of_int x) fs)) ^ "]" in *\)
-     * let p2s x = proof_state_to_json x in *)
-    let entry (outcomes, tac) =
-      "Not implemented curretnly" in
-      (* "{\"before\": [" ^ String.concat ", " (List.map p2s before) ^ "]\n" ^
-       * ", \"tacid\": " ^ (\*Base64.encode_string*\) h tac ^  "\n" ^
-       * ", \"after\": [" ^ String.concat ", " (List.map p2s after) ^ "]}\n" in *)
-    print_to_feat (entry (outcomes, tac)))
-
-(* let features term = List.map Hashtbl.hash (Features.extract_features (Hh_term.hhterm_of (Hh_term.econstr_to_constr term)))
- * 
- * let goal_to_features gl =
- *        let goal = Proofview.Goal.concl gl in
- *        let hyps = Proofview.Goal.hyps gl in
- *        let hyps_features =
- *           List.map
- *             (fun pt -> match pt with
- *                  | Context.Named.Declaration.LocalAssum (id, typ) ->
- *                    features typ
- *                  | Context.Named.Declaration.LocalDef (id, term, typ) ->
- *                    List.append (features term) (features typ))
- *             hyps in
- *        let feats = (List.append (features goal) (List.concat hyps_features)) in
- *        (\*let feats = List.map Hashtbl.hash feats in*\)
- *        List.sort(\*_uniq*\) Int.compare feats *)
+  Hashtbl.replace int64_to_knn id ((outcomes, tac)::semidb, exn)
 
 let record_map (f : Proofview.Goal.t -> 'a)
     (gls : Proofview.Goal.t Proofview.tactic list) : 'a list Proofview.tactic =
@@ -457,12 +408,6 @@ let record_map (f : Proofview.Goal.t -> 'a)
     | [] -> Proofview.tclUNIT (acc)
     | gl::gls' -> gl >>= fun gl' -> aux gls' (f gl' :: acc) in
   aux gls []
-
-(* let () = Vernacentries.requirehook := (fun files ->
- *   let newrequires = List.map (fun (pair) -> CUnix.canonical_path_name (snd pair)) files in
- *   let newrequires = List.map (fun (file) -> (String.sub file 0 (String.length file - 2)) ^ "feat") newrequires in
- *   requires := List.append newrequires !requires
- * ) *)
 
 let firstn n l =
   let rec aux acc n l =
@@ -756,12 +701,6 @@ let load_plugins () =
 (* Returns true if tactic execution should be skipped *)
 let pre_vernac_solve pstate id =
   load_plugins ();
-  (* If this needs to work again, put the current name in the evdmap storage *)
-  (* if not (Names.Id.equal !current_name new_name) then (
-   *   if !featureprinting then print_to_feat ("#lemma " ^ (Names.Id.to_string new_name) ^ "\n");
-   * ); *)
-  (* print_endline ("db_test: " ^ string_of_int (Predictor.count !db_test));
-   * print_endline ("id: " ^ (Int64.to_string id)); *)
   match Hashtbl.find_opt int64_to_knn id with
   | Some (db, exn) -> (List.iter add_to_db db; Hashtbl.remove int64_to_knn id;
       match exn with
@@ -816,12 +755,6 @@ let record_tac (tac2 : glob_tactic_expr) : unit Proofview.tactic =
         push_localdb (collect_states before_gls after_gls, tac2)
       ) >>= (fun () -> pop_state_id_stack () <*> (* TODO: This is a strange way of doing things, see todo above. *)
                        push_tactic_trace tac2)
-
-        (* Make predictions *)
-        (*let r = Predictor.knn db feat in
-           let r = List.map (fun (x, y, (z, q)) -> (x, y, q)) r in
-           let pp_str = Pp.int (get_k_str r tac) ++ (*(Pp.str " ") ++ (Pptactic.pr_raw_tactic tac) ++*) (Pp.str "\n") in
-           append "count.txt" (Pp.string_of_ppcmds pp_str);*)
 
 let ml_record_tac args is =
   (*let num = Tacinterp.Value.cast (Genarg.topwit Tacarg.wit_tactic) (List.hd args) in*)
