@@ -439,7 +439,7 @@ let parse_tac tac =
     try
       Tacinterp.eval_tactic tac
     with
-    e -> print_endline (Printexc.to_string e); flush_all (); assert false
+    e when CErrors.noncritical e -> print_endline (Printexc.to_string e); flush_all (); assert false
 
 let print_goal_short = Proofview.Goal.enter
     (fun gl ->
@@ -800,7 +800,7 @@ let recorder (tac : glob_tactic_expr) id name : unit Proofview.tactic = (* TODO:
       then () else add_to_db2 id (execs, tac);
       try (* This is purely for parsing bug detection and could be removed for performance reasons *)
         let _ = Pcoq.parse_string Pltac.tactic_eoi s in ()
-      with e ->
+      with e when CErrors.noncritical e ->
         Feedback.msg_warning (Pp.str (
             "Tactician detected a printing/parsing problem " ^
             "for the following tactic. Please report. " ^ s)) in
