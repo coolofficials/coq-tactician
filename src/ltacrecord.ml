@@ -74,23 +74,13 @@ let try_locate_absolute_library dir =
   | Error LibNotFound ->
     None
 
-let benchmarking = ref None
-let featureprinting = ref false
-let deterministic = ref false
+let benchmarktime = ref None
+let benchmarkinferences = ref None
+let benchmarking = ref false
 
 let base_filename =
   let dirpath = Global.current_dirpath () in
   Option.map (fun f -> Filename.remove_extension f) (try_locate_absolute_library dirpath)
-
-let feat_file =
-  let file = ref None in
-  (fun () ->
-    match !file with
-      | None -> let filename = Option.default "" base_filename ^ ".feat" in
-        let k = open_permanently filename in
-        file := Some k;
-        k
-      | Some f -> f)
 
 let eval_file =
   let file = ref None in
@@ -102,43 +92,33 @@ let eval_file =
        k
      | Some f -> f)
 
-let print_to_feat str =
-  output_string (feat_file ()) str;
-  flush (feat_file ())
-
 let print_to_eval str =
   output_string (eval_file ()) str;
   flush (eval_file ())
 
-let benchoptions = Goptions.{optdepr = false;
-                             optkey = ["Tactician"; "Benchmark"];
-                             optread = (fun () -> !benchmarking);
-                             optwrite = (fun b -> benchmarking := b;
-                                          match b with
-                                          | Some _ -> (match base_filename with
-                                              | None -> Feedback.msg_notice (
-                                                  Pp.str "No source file could be found. Disabling benchmarking.");
-                                                benchmarking := None
-                                              | Some _ ->
-                                                disable_queue (); ignore (eval_file ()))
-                                          | _ -> ())}
-let deterministicoptions = Goptions.{optdepr = false;
-                             optkey = ["Tactician"; "Benchmark"; "Deterministic"];
-                             optread = (fun () -> !deterministic);
-                             optwrite = (fun b -> deterministic := b)}
-let featureoptions = Goptions.{optdepr = false;
-                               optkey = ["Tactician"; "Output"; "Features"];
-                               optread = (fun () -> !featureprinting);
-                               optwrite = (fun b -> featureprinting := b; if b then
-                                              (match base_filename with
-                                              | None -> Feedback.msg_notice (
-                                                  Pp.str "No source file could be found. Disabling feature writing.");
-                                                benchmarking := None
-                                              | Some _ -> ignore (feat_file ())))}
+let bench_prepare () = match !benchmarkinferences, !benchmarktime with
+  | Some _, _ | _, Some _ -> (match base_filename with
+      | None -> Feedback.msg_notice (
+          Pp.str "No source file could be found. Disabling benchmarking.");
+        benchmarking := false
+      | Some _ ->
+        benchmarking := true;
+        disable_queue (); ignore (eval_file ()))
+  | None, None -> benchmarking := false
 
-let _ = Goptions.declare_int_option benchoptions
-let _ = Goptions.declare_bool_option deterministicoptions
-let _ = Goptions.declare_bool_option featureoptions
+let benchtimeoptions = Goptions.{optdepr = false;
+                             optkey = ["Tactician"; "Benchmark"];
+                             optread = (fun () -> !benchmarktime);
+                             optwrite = (fun b -> benchmarktime := b;
+                                          bench_prepare ())}
+let benchinferenceoptions = Goptions.{optdepr = false;
+                                     optkey = ["Tactician"; "Benchmark"; "Inferences"];
+                                     optread = (fun () -> !benchmarkinferences);
+                                     optwrite = (fun b -> benchmarkinferences := b;
+                                                  bench_prepare())}
+
+let _ = Goptions.declare_int_option benchtimeoptions
+let _ = Goptions.declare_int_option benchinferenceoptions
 
 let _ = Random.self_init ()
 
@@ -416,34 +396,7 @@ let add_to_db2 id ((outcomes, tac) : (Proofview.Goal.t * Proofview.Goal.t list) 
   let outcomes = List.map mk_outcome outcomes in
   add_to_db (outcomes, tac);
   let semidb, exn = Hashtbl.find int64_to_knn id in
-  Hashtbl.replace int64_to_knn id ((outcomes, tac)::semidb, exn);
-  if !featureprinting then (
-    (* let h s = string_of_int (Hashtbl.hash s) in
-     * (\* let l2s fs = "[" ^ (String.concat ", " (List.map (fun x -> string_of_int x) fs)) ^ "]" in *\)
-     * let p2s x = proof_state_to_json x in *)
-    let entry (outcomes, tac) =
-      "Not implemented curretnly" in
-      (* "{\"before\": [" ^ String.concat ", " (List.map p2s before) ^ "]\n" ^
-       * ", \"tacid\": " ^ (\*Base64.encode_string*\) h tac ^  "\n" ^
-       * ", \"after\": [" ^ String.concat ", " (List.map p2s after) ^ "]}\n" in *)
-    print_to_feat (entry (outcomes, tac)))
-
-(* let features term = List.map Hashtbl.hash (Features.extract_features (Hh_term.hhterm_of (Hh_term.econstr_to_constr term)))
- * 
- * let goal_to_features gl =
- *        let goal = Proofview.Goal.concl gl in
- *        let hyps = Proofview.Goal.hyps gl in
- *        let hyps_features =
- *           List.map
- *             (fun pt -> match pt with
- *                  | Context.Named.Declaration.LocalAssum (id, typ) ->
- *                    features typ
- *                  | Context.Named.Declaration.LocalDef (id, term, typ) ->
- *                    List.append (features term) (features typ))
- *             hyps in
- *        let feats = (List.append (features goal) (List.concat hyps_features)) in
- *        (\*let feats = List.map Hashtbl.hash feats in*\)
- *        List.sort(\*_uniq*\) Int.compare feats *)
+  Hashtbl.replace int64_to_knn id ((outcomes, tac)::semidb, exn)
 
 let record_map (f : Proofview.Goal.t -> 'a)
     (gls : Proofview.Goal.t Proofview.tactic list) : 'a list Proofview.tactic =
@@ -453,12 +406,6 @@ let record_map (f : Proofview.Goal.t -> 'a)
     | [] -> Proofview.tclUNIT (acc)
     | gl::gls' -> gl >>= fun gl' -> aux gls' (f gl' :: acc) in
   aux gls []
-
-(* let () = Vernacentries.requirehook := (fun files ->
- *   let newrequires = List.map (fun (pair) -> CUnix.canonical_path_name (snd pair)) files in
- *   let newrequires = List.map (fun (file) -> (String.sub file 0 (String.length file - 2)) ^ "feat") newrequires in
- *   requires := List.append newrequires !requires
- * ) *)
 
 let firstn n l =
   let rec aux acc n l =
@@ -484,18 +431,13 @@ let register tac name =
 
 let run_ml_tac name = TacML (CAst.make ({mltac_name = {mltac_plugin = "recording"; mltac_tactic = name}; mltac_index = 0}, []))
 
-let print_rank env rank =
-  let tac_pp env t = Sexpr.format_oneline (Pptactic.pr_glob_tactic env t) in
-  let strs = List.map (fun (x, t) -> (Printf.sprintf "%.4f " x) ^ (Pp.string_of_ppcmds (tac_pp env t))) rank in
-  Pp.str (String.concat "\n" strs)
-
 (* Running predicted tactics *)
 
 let parse_tac tac =
     try
       Tacinterp.eval_tactic tac
     with
-    e -> print_endline (Printexc.to_string e); flush_all (); assert false
+    e when CErrors.noncritical e -> print_endline (Printexc.to_string e); flush_all (); assert false
 
 let print_goal_short = Proofview.Goal.enter
     (fun gl ->
@@ -571,15 +513,38 @@ let predict =
      on goal zero will focus in the first goal of the reversed `situation` *)
   tclUNIT (learner_predict (List.rev situation))
 
-let userPredict =
+let filterTactics n (tacs : Tactic_learner_internal.TS.prediction Stream.t) =
+  let exception SuccessException in
   let open Proofview in
   let open Notations in
-  tclENV >>= fun env -> predict >>= fun r ->
+  let rec aux n tacs filtered = match n = 0, Stream.peek tacs with
+    | true, _ | _, None -> tclUNIT filtered
+    | false, Some (Tactic_learner_internal.TS.{ tactic; _} as p) -> Stream.junk tacs;
+      let tactic = parse_tac (tactic_repr tactic) in
+      tclOR (tclPROGRESS tactic >>= (fun _ -> tclZERO SuccessException))
+        (function
+          | (SuccessException, _) -> aux (n - 1) tacs (p::filtered)
+          | _ -> aux (n - 1) tacs filtered)
+  in aux n tacs []
+
+let print_rank env rank =
+  let tac_pp env t = Sexpr.format_oneline (Pptactic.pr_glob_tactic env t) in
+  let strs = List.map (fun (x, t) -> (Printf.sprintf "%.4f " x) ^ (Pp.string_of_ppcmds (tac_pp env t))) rank in
+  Pp.str (String.concat "\n" strs)
+
+let userPredict =
+  let debug = false in
+  let open Proofview in
+  let open Notations in
+  tclENV >>= fun env -> predict >>=
+  (if debug then (fun r -> tclUNIT (Stream.npeek 10 r)) else filterTactics 10) >>= fun r ->
   let r = List.map (fun ({confidence; focus; tactic} : Tactic_learner_internal.TS.prediction) ->
-      (confidence, focus, tactic)) (Stream.npeek 10 r) in
+      (confidence, focus, tactic)) r in
   let r = List.map (fun (x, _, (y, _)) -> (x, y)) r in
   (* Print predictions *)
-  (Proofview.tclLIFT (Proofview.NonLogical.print_info (print_rank env r)))
+  (Proofview.tclLIFT (if List.is_empty r then
+                        NonLogical.print_info (Pp.str "Ran out of suggestions to give...") else
+                        Proofview.NonLogical.print_info (print_rank env r)))
 
 let tac_exec_count = ref 0
 let tacpredict max_reached =
@@ -601,14 +566,6 @@ let tacpredict max_reached =
   let transform i (r : Tactic_learner_internal.TS.prediction) =
     { confidence = r.confidence; focus = r.focus; tactic = taceval i r.focus r.tactic } in
   tclUNIT (stream_mapi (fun i p -> transform i p) predictions)
-
-  let tclTIMEOUT2 n t =
-    Proofview.tclOR
-      (Timeouttac.ptimeout n t)
-      begin function (e, info) -> match e with
-        | Logic_monad.Tac_Timeout -> Tacticals.New.tclZEROMSG (Pp.str "timout")
-        | e -> Tacticals.New.tclZEROMSG (Pp.str "haha")
-      end
 
 let contains s1 s2 =
     let re = Str.regexp_string s2
@@ -650,21 +607,17 @@ let commonSearch max_exec =
              dec_search_recursion_depth () >>= fun () -> setFlags () <*> tclUNIT (wit, !tac_exec_count))
             (fun (e, i) -> setFlags () <*> tclZERO ~info:i e))
 
-let benchmarked_field : bool Evd.Store.field = Evd.Store.field ()
-let get_benchmarked () =
-  modify_field benchmarked_field (fun b -> b, b) (fun () -> false)
-let set_benchmarked () =
-  modify_field benchmarked_field (fun _ -> true, ()) (fun () -> true)
-
 let benchmarkSearch name : unit Proofview.tactic =
     let open Proofview in
     let open Notations in
     let modpath = Global.current_modpath () in
-    let abstract_time = match !benchmarking with
-      | None -> assert false
-      | Some t -> t in
-    let timeout_command = if !deterministic then fun x -> x else tclTIMEOUT2 abstract_time in
-    let max_exec = if !deterministic then Some abstract_time else None in
+    let timeout_command = match !benchmarktime with
+      | None -> fun x -> x
+      | Some t -> tclTIMEOUT t in
+    let max_exec = !benchmarkinferences in
+    let abstract_time =
+      Option.default "None" (Option.map string_of_int !benchmarktime) ^ "/" ^
+      Option.default "None" (Option.map string_of_int !benchmarkinferences) in
     let full_name = Names.ModPath.to_string modpath ^ "." ^ Names.Id.to_string name in
     let print_success env (wit, count) start_time =
       let tcs, m = List.split (List.map (fun {tac;focus;prediction_index} ->
@@ -676,16 +629,14 @@ let benchmarkSearch name : unit Proofview.tactic =
       (make (fun () -> print_to_eval ("\t" ^ m ^ "\t" ^ tstring ^ "\t" ^ tdiff ^ "\t" ^ string_of_int count))) >>
       (print_info (Pp.str ("Proof found for " ^ full_name ^ "!"))) in
     let print_name = NonLogical.make (fun () ->
-        print_to_eval ("\n" ^ (full_name) ^ "\t" ^ string_of_int abstract_time)) in
-    get_benchmarked () >>= fun benchmarked ->
-    if benchmarked then tclUNIT () else
-      set_benchmarked () <*>
-      let start_time = Unix.gettimeofday () in
-      timeout_command (tclENV >>= fun env ->
-                       tclLIFT (NonLogical.print_info (Pp.str ("Start proof search for " ^ full_name))) <*>
-                       tclLIFT print_name <*>
-                       commonSearch max_exec >>=
-                       fun m -> tclLIFT (print_success env m start_time))
+        print_to_eval ("\n" ^ (full_name) ^ "\t" ^ abstract_time)) in
+    let start_time = Unix.gettimeofday () in
+    timeout_command (tclENV >>= fun env ->
+                     tclLIFT (NonLogical.print_info (Pp.str ("Start proof search for " ^ full_name))) <*>
+                     tclLIFT print_name <*>
+                     commonSearch max_exec >>=
+                     fun m -> tclLIFT (print_success env m start_time)) <*>
+    Tacticals.New.tclZEROMSG (Pp.str "Benchmark search does not actually prove lemmas")
 
 let nested_search_solutions_field : (glob_tactic_expr * int) list list Evd.Store.field = Evd.Store.field ()
 let push_nested_search_solutions tcs =
@@ -748,12 +699,6 @@ let load_plugins () =
 (* Returns true if tactic execution should be skipped *)
 let pre_vernac_solve pstate id =
   load_plugins ();
-  (* If this needs to work again, put the current name in the evdmap storage *)
-  (* if not (Names.Id.equal !current_name new_name) then (
-   *   if !featureprinting then print_to_feat ("#lemma " ^ (Names.Id.to_string new_name) ^ "\n");
-   * ); *)
-  (* print_endline ("db_test: " ^ string_of_int (Predictor.count !db_test));
-   * print_endline ("id: " ^ (Int64.to_string id)); *)
   match Hashtbl.find_opt int64_to_knn id with
   | Some (db, exn) -> (List.iter add_to_db db; Hashtbl.remove int64_to_knn id;
       match exn with
@@ -809,12 +754,6 @@ let record_tac (tac2 : glob_tactic_expr) : unit Proofview.tactic =
       ) >>= (fun () -> pop_state_id_stack () <*> (* TODO: This is a strange way of doing things, see todo above. *)
                        push_tactic_trace tac2)
 
-        (* Make predictions *)
-        (*let r = Predictor.knn db feat in
-           let r = List.map (fun (x, y, (z, q)) -> (x, y, q)) r in
-           let pp_str = Pp.int (get_k_str r tac) ++ (*(Pp.str " ") ++ (Pptactic.pr_raw_tactic tac) ++*) (Pp.str "\n") in
-           append "count.txt" (Pp.string_of_ppcmds pp_str);*)
-
 let ml_record_tac args is =
   (*let num = Tacinterp.Value.cast (Genarg.topwit Tacarg.wit_tactic) (List.hd args) in*)
   let tac = Tacinterp.Value.cast (Genarg.topwit wit_glbtactic) (List.hd args) in
@@ -839,6 +778,12 @@ let run_pushs_state_tac (): glob_tactic_expr =
 let record_tac_complete orig tac : glob_tactic_expr =
   TacThen (run_pushs_state_tac (), TacThen (tac, run_record_tac orig))
 
+let benchmarked_field : bool Evd.Store.field = Evd.Store.field ()
+let get_benchmarked () =
+  modify_field benchmarked_field (fun b -> b, b) (fun () -> false)
+let set_benchmarked () =
+  modify_field benchmarked_field (fun _ -> true, ()) (fun () -> true)
+
 let recorder (tac : glob_tactic_expr) id name : unit Proofview.tactic = (* TODO: Implement self-learning *)
   let open Proofview in
   let open Notations in
@@ -853,7 +798,7 @@ let recorder (tac : glob_tactic_expr) id name : unit Proofview.tactic = (* TODO:
       then () else add_to_db2 id (execs, tac);
       try (* This is purely for parsing bug detection and could be removed for performance reasons *)
         let _ = Pcoq.parse_string Pltac.tactic_eoi s in ()
-      with e ->
+      with e when CErrors.noncritical e ->
         Feedback.msg_warning (Pp.str (
             "Tactician detected a printing/parsing problem " ^
             "for the following tactic. Please report. " ^ s)) in
@@ -862,8 +807,11 @@ let recorder (tac : glob_tactic_expr) id name : unit Proofview.tactic = (* TODO:
   let ptac = Tacinterp.eval_tactic rtac in
   let ptac = ptac <*> tclENV >>= fun env -> empty_localdb () >>= save_db env in
   match !benchmarking with
-  | None -> ptac
-  | Some _ -> benchmarkSearch name <*> ptac
+  | false -> ptac
+  | true ->
+    get_benchmarked () >>= fun benchmarked ->
+    if benchmarked then ptac else
+      benchmarkSearch name <+> (set_benchmarked () <*> ptac)
 
 let hide_interp_t global t ot id name =
   let open Proofview in
