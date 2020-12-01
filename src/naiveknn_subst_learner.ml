@@ -202,7 +202,7 @@ module NaiveKnn : TacticianOnlineLearnerType = functor (TS : TacticianStructures
                  {confidence = Float.neg_infinity; focus = 0; tactic = tactic_make (TacId []) } else ts
             )
             (Stream.of_list sorted) in
-        stream_append (Stream.of_list out) subst_stream
+        Stream.of_list out
 
     let evaluate db _ _ = 1., db
 
